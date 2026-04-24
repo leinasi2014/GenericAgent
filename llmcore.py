@@ -218,6 +218,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 _record_usage(usage, api_mode)
                 break
         blocks = []
+        if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(fc_buf):
             fc = fc_buf[idx]
@@ -229,6 +230,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
         return blocks
     else:
         tc_buf = {}  # index -> {id, name, args}
+        reasoning_text = ""  # DeepSeek V4 reasoning accumulation
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -241,6 +243,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             delta = ch.get("delta") or {}
             if delta.get("content"):
                 text = delta["content"]; content_text += text; yield text
+            rc = delta.get("reasoning_content")
+            if rc: reasoning_text += rc
             for tc in (delta.get("tool_calls") or []):
                 idx = tc.get("index", 0)
                 has_name = bool(tc.get("function", {}).get("name"))
@@ -430,10 +434,13 @@ def _msgs_claude2oai(messages):
         content = msg.get("content", "")
         blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
         if role == "assistant":
-            text_parts, tool_calls = [], []
+            text_parts, tool_calls, reasoning_parts = [], [], []
             for b in blocks:
                 if not isinstance(b, dict): continue
-                if b.get("type") == "text" and b.get("text"): text_parts.append({"type": "text", "text": b.get("text", "")})
+                if b.get("type") == "thinking":
+                    t = b.get("thinking", "")
+                    if t: reasoning_parts.append(t)
+                elif b.get("type") == "text" and b.get("text"): text_parts.append({"type": "text", "text": b.get("text", "")})
                 elif b.get("type") == "tool_use":
                     tool_calls.append({
                         "id": b.get("id") or '', "type": "function",
@@ -441,8 +448,13 @@ def _msgs_claude2oai(messages):
                     })
             m = {"role": "assistant"}
             if text_parts: m["content"] = text_parts
-            else: m["content"] = ""
+            else: m["content"] = None if tool_calls else ""
             if tool_calls: m["tool_calls"] = tool_calls
+            if reasoning_parts:
+                m["reasoning_content"] = "".join(reasoning_parts)
+            elif tool_calls:
+                # DeepSeek V4 requires reasoning_content on ALL tool-call assistant messages
+                m["reasoning_content"] = ""
             result.append(m)
         elif role == "user":
             text_parts = []

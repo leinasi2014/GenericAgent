@@ -102,3 +102,5 @@ reflect/*
 
 # Universal: never track __pycache__ anywhere
 **/__pycache__/
+!memory/harness_sop.md
+!memory/global_mem_insight.txt
